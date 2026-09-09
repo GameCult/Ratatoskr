@@ -1,0 +1,15 @@
+[package]
+name = "ratatoskr-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "CultMesh media receive core. Carries the transport so the OBS plugin does not have to."
+
+[lib]
+name = "ratatoskr_core"
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[dependencies]
+anyhow = "1"
+cultnet-rs = { git = "https://github.com/GameCult/CultLib.git", rev = "d1a9edad3a116be341b0b5198c6998c31a083bda", package = "cultnet-rs" }
