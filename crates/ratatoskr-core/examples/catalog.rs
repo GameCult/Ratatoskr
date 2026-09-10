@@ -1,7 +1,7 @@
 //! What Odin advertises, from the consumer's side of the fence.
 //!
 //! ```text
-//! cargo run --example catalog -- rudp://10.77.0.1:17971 [receiver-id]
+//! cargo run --example catalog -- rudp://10.77.0.1:17871 [receiver-id]
 //! ```
 //!
 //! Pulls every `gamecult.media_stream_advertisement` the given Odin holds and
@@ -14,7 +14,7 @@ use ratatoskr_core::{CatalogOptions, pull_catalog};
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
-    let odin = args.next().unwrap_or_else(|| "rudp://10.77.0.1:17971".to_string());
+    let odin = args.next().unwrap_or_else(|| "rudp://10.77.0.1:17871".to_string());
     let runtime_id = args.next().unwrap_or_else(|| "ratatoskr-catalog-probe".to_string());
     let state_dir = std::env::temp_dir().join("ratatoskr-catalog-probe");
     let pulled = pull_catalog(&CatalogOptions {
