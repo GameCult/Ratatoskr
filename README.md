@@ -48,14 +48,17 @@ does not know or care which producer it is attached to.
 ## Shape
 
 ```
-crates/ratatoskr-core/     Rust. The transport-facing half.
+crates/ratatoskr-core/     Rust. Everything below the OBS callbacks.
   src/receiver.rs          Subscription over cultnet-rs. No transport of its own.
   src/video.rs             Chunks and parity in, whole access units out.
   src/feedback.rs          What the receiver says back, and how often.
+  src/catalog.rs           What advertises through Odin; asking for a stream.
   src/ffi.rs               The C ABI, deliberately small.
 plugin/
   include/ratatoskr.h      Hand-written header. Small enough to read in one sitting.
+  src/ratatoskr_source.c   The OBS source. Owns the OBS lifecycle and nothing else.
   tests/abi_smoke.c        Loads the cdylib and checks the header tells the truth.
+  CMakeLists.txt           find_package(libobs) + the core static library.
 ```
 
 The core builds as `rlib`, `cdylib` and `staticlib`, following the
@@ -65,10 +68,42 @@ be checked with any compiler.
 
 ## Status
 
-Early. The core opens a CultNet media subscription, drains it, decodes the
+The OBS source exists and installs; it has not yet carried a live stream.
+
+**In OBS:** *Sources → Add → CultMesh Media Stream*. Its properties name an
+Odin endpoint, pull every `gamecult.media_stream_advertisement` Odin holds,
+and offer each stream's video sources, audio sources and codecs from the
+advertisement itself, plus bitrate and latency budget (zero means the
+producer's default). Selecting and activating publishes a
+`gamecult.media_stream_request` naming this receiver's endpoint; the producer
+dials it with the advertised connection id and answers on the same request
+key. Nothing in the properties comes from configuration or from Muninn: the
+picker shows whatever advertises.
+
+Video reaches OBS the way the previous plugin proved in the field: the core
+relays each whole access unit as a raw byte stream to a loopback UDP port and
+the source draws a private `ffmpeg_source` child reading it, so OBS's own
+decoder decodes. Audio is PCM and goes straight to `obs_source_output_audio`
+with the producer's presentation time.
+
+**Building the plugin** needs a libobs to link against. There is no SDK
+download for Windows; `.sdk/` (git-ignored) holds an obs-studio checkout at
+the installed version, the matching obs-deps, and a libobs-only build:
+
+```
+cmake -S .sdk/obs-studio -B .sdk/obs-build -G "Visual Studio 17 2022" -A x64   -DCMAKE_PREFIX_PATH=.sdk/obs-deps-<version>-x64 -DENABLE_FRONTEND=OFF   -DENABLE_PLUGINS=OFF -DENABLE_SCRIPTING=OFF -DENABLE_BROWSER=OFF
+cmake --build .sdk/obs-build --config Release --target libobs
+cargo build --release -p ratatoskr-core
+cmake -S plugin -B plugin/build -G "Visual Studio 17 2022" -A x64   -DCMAKE_MODULE_PATH=.sdk/obs-studio/cmake/finders   -DCMAKE_PREFIX_PATH=".sdk/obs-build/libobs;.sdk/obs-build/deps/w32-pthreads;.sdk/obs-deps-<version>-x64"
+cmake --build plugin/build --config Release
+cmake --install plugin/build --config Release --prefix %APPDATA%/obs-studio/plugins/ratatoskr
+```
+
+The core opens a CultNet media subscription, drains it, decodes the
 CultMesh media envelope, reassembles video, and hands whole access units and
 audio packets across the ABI with a kind discriminator so a caller routes them
-without parsing records itself. Tests sit on both sides of that boundary.
+without parsing records itself. Tests sit on both sides of that boundary,
+including a loopback Odin-shaped catalog server for the discovery path.
 
 Video reassembly follows the contract's erasure code and adds only receiver
 policy. The producer splits each access unit into datagram-sized chunks and,
@@ -108,10 +143,13 @@ is how the last receiver and sender drifted apart without either noticing.
 
 What is not here yet:
 
-- **The OBS plugin itself.** Roughly 1,200 lines of genuine OBS work — source
-  registration, the ffmpeg audio decode child, the program texture source, the
-  stem IPC — is worth porting from the Mimir plugin rather than rewriting. The
-  ~2,500 lines of transport around it is not.
+- **A live frame.** No stream has crossed Raven → Starfire through this path.
+  It needs Muninn on Raven running a build that advertises and answers
+  (`b679fc2` or later) and Starfire admitting inbound UDP on the receiver's
+  port.
+- **Opus.** The request carries `audio_codec`; the only producer today emits
+  `pcm-f32le-interleaved`. When Opus lands, the audio path here grows a
+  decoder or a second `ffmpeg_source` child.
 
 ## A note on health signals
 

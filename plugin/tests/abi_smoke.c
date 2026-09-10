@@ -16,14 +16,15 @@ static void check(int ok, const char *what)
     else { printf("ok   %s\n", what); }
 }
 
-typedef int (*open_fn)(const char *, const char *, unsigned int, RatatoskrHandle **);
+typedef int (*open_fn)(const char *, const char *, unsigned int, const char *, RatatoskrHandle **);
 typedef int (*poll_fn)(RatatoskrHandle *);
-typedef int (*next_fn)(RatatoskrHandle *, uint8_t *, size_t, size_t *, int *);
+typedef int (*next_fn)(RatatoskrHandle *, uint8_t *, size_t, size_t *, int *, int64_t *);
 typedef uint16_t (*port_fn)(RatatoskrHandle *);
 typedef void (*delivered_fn)(RatatoskrHandle *, uint64_t *, uint64_t *);
 typedef size_t (*err_fn)(char *, size_t);
 typedef void (*close_fn)(RatatoskrHandle *);
 typedef uint64_t (*undecodable_fn)(RatatoskrHandle *);
+typedef uint16_t (*free_port_fn)(void);
 
 int main(int argc, char **argv)
 {
@@ -43,7 +44,7 @@ int main(int argc, char **argv)
     if (failures) { printf("ABI SMOKE FAILED\n"); return 1; }
 
     RatatoskrHandle *handle = NULL;
-    check(r_open("127.0.0.1:0", "ratatoskr-abi-smoke", 0x0BE00001u, &handle) == RATATOSKR_OK,
+    check(r_open("127.0.0.1:0", "ratatoskr-abi-smoke", 0x0BE00001u, NULL, &handle) == RATATOSKR_OK,
           "open returns OK");
     check(handle != NULL, "open yields a handle");
     check(r_port(handle) != 0, "ephemeral bind resolves to a real port");
@@ -52,7 +53,8 @@ int main(int argc, char **argv)
     size_t out_len = 12345;
     int kind = -99;
     unsigned char buffer[64];
-    check(r_next(handle, buffer, sizeof buffer, &out_len, &kind) == RATATOSKR_NONE,
+    int64_t pts = -1;
+    check(r_next(handle, buffer, sizeof buffer, &out_len, &kind, &pts) == RATATOSKR_NONE,
           "empty queue reports NONE, not an error");
     check(out_len == 0, "NONE writes a zero length");
 
@@ -67,13 +69,23 @@ int main(int argc, char **argv)
     r_close(handle);
 
     handle = NULL;
-    check(r_open("not-an-address", "x", 1, &handle) == RATATOSKR_ERR_ARGUMENT,
+    check(r_open("not-an-address", "x", 1, NULL, &handle) == RATATOSKR_ERR_ARGUMENT,
           "a bad bind address is refused");
     check(handle == NULL, "a refused open leaves no handle");
 
     char message[256];
     check(r_err(message, sizeof message) > 0, "a failure leaves a message");
     check(strstr(message, "not-an-address") != NULL, "the message names the bad input");
+
+    check(r_open("127.0.0.1:0", "x", 1, "not-a-relay", &handle) == RATATOSKR_ERR_ARGUMENT,
+          "a bad video relay is refused");
+
+    free_port_fn r_free_port = (free_port_fn)(void *)GetProcAddress(lib, "ratatoskr_free_udp_port");
+    check(r_free_port && r_free_port() != 0, "a free loopback port can be found");
+    check(GetProcAddress(lib, "ratatoskr_catalog_pull") && GetProcAddress(lib, "ratatoskr_catalog_stream") &&
+              GetProcAddress(lib, "ratatoskr_request_start") && GetProcAddress(lib, "ratatoskr_request_stop") &&
+              GetProcAddress(lib, "ratatoskr_request_state") && GetProcAddress(lib, "ratatoskr_catalog_close"),
+          "the discovery and request symbols are exported");
 
     r_close(NULL);
     check(r_poll(NULL) == RATATOSKR_ERR_ARGUMENT, "null handle is refused");

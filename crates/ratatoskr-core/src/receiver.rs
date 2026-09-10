@@ -37,6 +37,10 @@ pub struct ReceiverOptions {
     pub video: VideoAssemblerOptions,
     /// How often the producer is told.
     pub feedback: FeedbackOptions,
+    /// Where to copy each whole video access unit as UDP datagrams, for a
+    /// decoder that reads a raw H.264/H.265 byte stream from a local socket
+    /// (OBS's own ffmpeg source does). `None` keeps frames in-process.
+    pub video_relay: Option<SocketAddr>,
 }
 
 /// What the renderer is given. Deliberately not the wire record: a renderer
@@ -75,6 +79,8 @@ pub enum MediaEvent {
 
 pub struct RatatoskrReceiver {
     hub: CultNetRudpServerHub,
+    relay: Option<(UdpSocket, SocketAddr)>,
+    relayed_frames: u64,
     runtime_id: String,
     producer: Option<CultNetRudpServerSessionContext>,
     video: VideoAssembler,
@@ -100,8 +106,18 @@ impl RatatoskrReceiver {
         ))
         .context("opening Ratatoskr CultNet RUDP receiver")?;
 
+        let relay = match options.video_relay {
+            Some(target) => {
+                let socket = UdpSocket::bind("127.0.0.1:0").context("binding the video relay socket")?;
+                Some((socket, target))
+            }
+            None => None,
+        };
+
         Ok(Self {
             hub,
+            relay,
+            relayed_frames: 0,
             feedback: FeedbackComposer::new(options.runtime_id.clone(), options.feedback),
             runtime_id: options.runtime_id,
             producer: None,
@@ -243,9 +259,12 @@ impl RatatoskrReceiver {
             }
         };
         match assembled {
-            Ok(Some(frame)) => Some(MediaEvent::VideoFrame {
-                frame: Box::new(frame),
-            }),
+            Ok(Some(frame)) => {
+                self.relay_video(&frame.bytes);
+                Some(MediaEvent::VideoFrame {
+                    frame: Box::new(frame),
+                })
+            }
             Ok(None) => None,
             Err(error) => {
                 self.rejected += 1;
@@ -254,6 +273,31 @@ impl RatatoskrReceiver {
                 })
             }
         }
+    }
+
+    /// A whole access unit as a raw byte stream over loopback. Datagrams stay
+    /// under the UDP limit; a raw H.264 demuxer reads the stream, not the
+    /// packetisation, and loopback keeps them in order.
+    fn relay_video(&mut self, bytes: &[u8]) {
+        let Some((socket, target)) = self.relay.as_ref() else {
+            return;
+        };
+        const DATAGRAM: usize = 60_000;
+        let mut ok = true;
+        for piece in bytes.chunks(DATAGRAM) {
+            if socket.send_to(piece, target).is_err() {
+                ok = false;
+                break;
+            }
+        }
+        if ok {
+            self.relayed_frames += 1;
+        }
+    }
+
+    /// Whole frames copied to the relay. Zero with no relay configured.
+    pub fn relayed_frames(&self) -> u64 {
+        self.relayed_frames
     }
 
     /// Payloads admitted and their total size. Counted from what was actually
@@ -311,6 +355,7 @@ mod tests {
             connection_id: CONNECTION,
             video: VideoAssemblerOptions::default(),
             feedback: FeedbackOptions::default(),
+            video_relay: None,
         }
     }
 
@@ -409,6 +454,25 @@ mod tests {
             panic!("audio passes through");
         };
         assert_eq!(record.payload, vec![9, 9, 9]);
+    }
+
+    /// The relay hands a local decoder the frame exactly as reassembled.
+    #[test]
+    fn a_relayed_frame_arrives_whole_on_loopback() {
+        let listener = UdpSocket::bind("127.0.0.1:0").expect("binds");
+        listener.set_read_timeout(Some(Duration::from_secs(2))).expect("timeout");
+        let mut receiver = RatatoskrReceiver::open(ReceiverOptions {
+            video_relay: Some(listener.local_addr().expect("addr")),
+            ..loopback()
+        })
+        .expect("opens");
+        let now = Instant::now();
+        receiver.admit(chunk(1, 0, 2, vec![1, 2]), now);
+        receiver.admit(chunk(1, 1, 2, vec![3]), now);
+        let mut buffer = [0u8; 16];
+        let (len, _) = listener.recv_from(&mut buffer).expect("the frame was relayed");
+        assert_eq!(&buffer[..len], &[1, 2, 3]);
+        assert_eq!(receiver.relayed_frames(), 1);
     }
 
     /// Feedback with nobody to send it to is reported, not lost silently.

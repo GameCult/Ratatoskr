@@ -25,12 +25,14 @@
 //! Ratatoskr is a consumer of a general contract. It is not the contract, and it
 //! has no opinion about who produced the stream.
 
+pub mod catalog;
 pub mod feedback;
 pub mod ffi;
 mod receiver;
 pub mod video;
 
 pub use receiver::{MediaEvent, RatatoskrReceiver, ReceiverOptions};
+pub use catalog::{CatalogOptions, CatalogPull, pull_catalog, pull_request_state, publish_request, start_request, stop_request};
 pub use feedback::{FeedbackOptions, FeedbackStats};
 pub use video::{
     ExpiredFrame, ExpiryReason, FrameKey, RepairRequest, VideoAssembler, VideoAssemblerOptions,

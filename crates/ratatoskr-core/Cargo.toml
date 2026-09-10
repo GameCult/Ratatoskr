@@ -13,4 +13,9 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 [dependencies]
 anyhow = "1"
 chrono = "0.4"
-cultnet-rs = { git = "https://github.com/GameCult/CultLib.git", rev = "4160ab560b15150d8054c5c7f557711ad244b8e0", package = "cultnet-rs" }
+cultnet-rs = { git = "https://github.com/GameCult/CultLib.git", rev = "780e1a48cdf6ded6d3a6e3e72916817fb3768f05", package = "cultnet-rs" }
+cultmesh-rs = { git = "https://github.com/GameCult/CultLib.git", rev = "780e1a48cdf6ded6d3a6e3e72916817fb3768f05", package = "cultmesh-rs" }
+cultcache-rs = { git = "https://github.com/GameCult/CultLib.git", rev = "780e1a48cdf6ded6d3a6e3e72916817fb3768f05", package = "cultcache-rs" }
+
+[dev-dependencies]
+rmp-serde = "1.3"

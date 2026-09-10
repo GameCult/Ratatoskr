@@ -1,2 +1,4 @@
 target/
 *.exe
+.sdk/
+plugin/build/
