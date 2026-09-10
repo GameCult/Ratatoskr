@@ -12,4 +12,4 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 
 [dependencies]
 anyhow = "1"
-cultnet-rs = { git = "https://github.com/GameCult/CultLib.git", rev = "05e092514329e5703a53423efb594fa89c57fe2a", package = "cultnet-rs" }
+cultnet-rs = { git = "https://github.com/GameCult/CultLib.git", rev = "89687fceb4d0af32e672738a18c352f1b3b744df", package = "cultnet-rs" }
