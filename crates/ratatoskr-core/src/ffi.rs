@@ -21,9 +21,7 @@ use cultnet_rs::GameCultMediaStreamAdvertisementRecord;
 
 use crate::catalog::{CatalogOptions, pull_catalog, pull_request_state, publish_request, start_request, stop_request};
 
-use crate::feedback::FeedbackOptions;
 use crate::receiver::{MediaEvent, RatatoskrReceiver, ReceiverOptions};
-use crate::video::VideoAssemblerOptions;
 
 pub const RATATOSKR_OK: c_int = 0;
 pub const RATATOSKR_NONE: c_int = 1;
@@ -64,23 +62,26 @@ fn pts_nanos(pts_ticks: i64, num: u32, den: u32) -> i64 {
     ((pts_ticks as i128 * num as i128 * 1_000_000_000) / den as i128) as i64
 }
 
+/// Dials the producer at `producer` (`host:port`, the advertisement's
+/// `media_endpoint`) and keeps dialling until it answers.
+///
 /// # Safety
-/// `bind` and `runtime_id` must be valid NUL-terminated UTF-8; `video_relay`
+/// `producer` and `runtime_id` must be valid NUL-terminated UTF-8; `video_relay`
 /// may be NULL or a `host:port` to copy whole video access units to.
 /// `out_handle` must be a valid pointer to write one handle into.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ratatoskr_receiver_open(
-    bind: *const c_char,
+    producer: *const c_char,
     runtime_id: *const c_char,
     connection_id: c_uint,
     video_relay: *const c_char,
     out_handle: *mut *mut RatatoskrHandle,
 ) -> c_int {
-    if bind.is_null() || runtime_id.is_null() || out_handle.is_null() {
+    if producer.is_null() || runtime_id.is_null() || out_handle.is_null() {
         set_last_error("null argument");
         return RATATOSKR_ERR_ARGUMENT;
     }
-    let (bind, runtime_id) = unsafe { (CStr::from_ptr(bind), CStr::from_ptr(runtime_id)) };
+    let (producer, runtime_id) = unsafe { (CStr::from_ptr(producer), CStr::from_ptr(runtime_id)) };
     let video_relay = if video_relay.is_null() {
         None
     } else {
@@ -92,12 +93,12 @@ pub unsafe extern "C" fn ratatoskr_receiver_open(
             }
         }
     };
-    let Ok(bind) = bind.to_str().map(str::to_owned) else {
-        set_last_error("bind address is not valid UTF-8");
+    let Ok(producer) = producer.to_str().map(str::to_owned) else {
+        set_last_error("producer endpoint is not valid UTF-8");
         return RATATOSKR_ERR_ARGUMENT;
     };
-    let Ok(bind) = bind.parse::<SocketAddr>() else {
-        set_last_error(format!("bind address {bind} is not a socket address"));
+    let Some(producer) = resolve_endpoint(&producer) else {
+        set_last_error(format!("producer endpoint {producer} is not a host:port that resolves"));
         return RATATOSKR_ERR_ARGUMENT;
     };
     let Ok(runtime_id) = runtime_id.to_str().map(str::to_owned) else {
@@ -106,12 +107,8 @@ pub unsafe extern "C" fn ratatoskr_receiver_open(
     };
 
     match RatatoskrReceiver::open(ReceiverOptions {
-        bind,
-        runtime_id,
-        connection_id: connection_id as u32,
-        video: VideoAssemblerOptions::default(),
-        feedback: FeedbackOptions::default(),
         video_relay,
+        ..ReceiverOptions::new(producer, runtime_id, connection_id as u32)
     }) {
         Ok(receiver) => {
             let handle = Box::new(RatatoskrHandle {
@@ -234,17 +231,21 @@ pub unsafe extern "C" fn ratatoskr_receiver_undecodable(handle: *mut RatatoskrHa
         .unwrap_or(0)
 }
 
-/// The port actually bound, which differs from the requested one when 0 was
-/// passed. Returns 0 if unavailable.
+/// 1 while the producer has answered the dial and not since gone quiet, else
+/// 0. The receiver keeps dialling on its own either way.
 ///
 /// # Safety
-/// `handle` must be live.
+/// `handle` must be live or null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ratatoskr_receiver_local_port(handle: *mut RatatoskrHandle) -> u16 {
-    unsafe { handle.as_ref() }
-        .and_then(|handle| handle.receiver.local_addr().ok())
-        .map(|addr| addr.port())
-        .unwrap_or(0)
+pub unsafe extern "C" fn ratatoskr_receiver_attached(handle: *mut RatatoskrHandle) -> c_int {
+    unsafe { handle.as_ref() }.is_some_and(|handle| handle.receiver.attached()) as c_int
+}
+
+/// `host:port` to the first address it resolves to. A producer may advertise
+/// a hostname.
+fn resolve_endpoint(value: &str) -> Option<SocketAddr> {
+    use std::net::ToSocketAddrs;
+    value.to_socket_addrs().ok()?.next()
 }
 
 /// Payloads delivered and their total bytes, both observed rather than
@@ -360,11 +361,13 @@ pub struct RatatoskrStreamInfo {
     pub default_video_bitrate_kbps: u32,
     pub default_latency_budget_ms: u32,
     pub media_packet_bytes: u32,
+    /// `host:port` the producer serves from; dial it with `media_connection_id`.
+    pub media_endpoint: *const c_char,
     pub media_connection_id: u32,
 }
 
 struct StreamStrings {
-    scalars: [CString; 4],
+    scalars: [CString; 5],
     /// Owns the bytes `list_pointers` point into; never read directly.
     _owned_lists: [Vec<CString>; 6],
     list_pointers: [Vec<*const c_char>; 6],
@@ -455,6 +458,7 @@ pub unsafe extern "C" fn ratatoskr_catalog_pull(
                     c_string(&stream.producer_id),
                     c_string(&stream.label),
                     c_string(&stream.state),
+                    c_string(&stream.media_endpoint),
                 ],
                 _owned_lists: [a.0, b.0, c.0, d.0, e.0, f.0],
                 list_pointers: [a.1, b.1, c.1, d.1, e.1, f.1],
@@ -528,15 +532,17 @@ pub unsafe extern "C" fn ratatoskr_catalog_stream(
         default_video_bitrate_kbps: stream.default_video_bitrate_kbps,
         default_latency_budget_ms: stream.default_latency_budget_ms,
         media_packet_bytes: stream.media_packet_bytes,
+        media_endpoint: strings.scalars[4].as_ptr(),
         media_connection_id: stream.media_connection_id,
     };
     unsafe { ptr::write(out, info) };
     RATATOSKR_OK
 }
 
-/// Asks the producer of stream `index` to start serving it to
-/// `receiver_endpoint`. Empty source ids mean "none of that kind"; a zero
-/// bitrate or latency means the producer's default. Blocks for the publish.
+/// Asks the producer of stream `index` to start serving it; once it answers
+/// `running`, dial its `media_endpoint` with `ratatoskr_receiver_open`.
+/// Empty source ids mean "none of that kind"; a zero bitrate or latency
+/// means the producer's default. Blocks for the publish.
 ///
 /// # Safety
 /// `catalog` must be live; strings must be valid NUL-terminated UTF-8.
@@ -544,7 +550,6 @@ pub unsafe extern "C" fn ratatoskr_catalog_stream(
 pub unsafe extern "C" fn ratatoskr_request_start(
     catalog: *const RatatoskrCatalog,
     index: usize,
-    receiver_endpoint: *const c_char,
     video_source_id: *const c_char,
     audio_source_id: *const c_char,
     video_codec: *const c_char,
@@ -560,8 +565,7 @@ pub unsafe extern "C" fn ratatoskr_request_start(
         set_last_error(format!("stream index {index} out of range"));
         return RATATOSKR_ERR_ARGUMENT;
     };
-    let (Some(endpoint), Some(video_source), Some(audio_source), Some(video_codec), Some(audio_codec)) = (
-        read_c_str(receiver_endpoint, "receiver endpoint"),
+    let (Some(video_source), Some(audio_source), Some(video_codec), Some(audio_codec)) = (
         read_c_str(video_source_id, "video source id"),
         read_c_str(audio_source_id, "audio source id"),
         read_c_str(video_codec, "video codec"),
@@ -569,15 +573,10 @@ pub unsafe extern "C" fn ratatoskr_request_start(
     ) else {
         return RATATOSKR_ERR_ARGUMENT;
     };
-    let Ok(endpoint) = endpoint.parse::<SocketAddr>() else {
-        set_last_error(format!("receiver endpoint {endpoint} is not host:port"));
-        return RATATOSKR_ERR_ARGUMENT;
-    };
     let observed_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
     let request = start_request(
         stream,
         &catalog.options.runtime_id,
-        endpoint,
         video_source,
         audio_source,
         video_codec,
@@ -709,7 +708,9 @@ mod tests {
     use std::ffi::CString;
 
     fn open() -> *mut RatatoskrHandle {
-        let bind = CString::new("127.0.0.1:0").expect("cstring");
+        // An address nobody answers on; the dial is sent, not answered.
+        let dead = UdpSocket::bind("127.0.0.1:0").expect("binds").local_addr().expect("addr");
+        let bind = CString::new(dead.to_string()).expect("cstring");
         let id = CString::new("ratatoskr-ffi-test").expect("cstring");
         let mut handle: *mut RatatoskrHandle = ptr::null_mut();
         let rc = unsafe {
@@ -723,7 +724,7 @@ mod tests {
     #[test]
     fn open_poll_close_round_trips() {
         let handle = open();
-        assert!(unsafe { ratatoskr_receiver_local_port(handle) } != 0);
+        assert_eq!(unsafe { ratatoskr_receiver_attached(handle) }, 0, "nobody answered");
         assert_eq!(unsafe { ratatoskr_receiver_poll(handle) }, 0);
         unsafe { ratatoskr_receiver_close(handle) };
     }
@@ -803,7 +804,7 @@ mod tests {
             unsafe { ratatoskr_receiver_poll(ptr::null_mut()) },
             RATATOSKR_ERR_ARGUMENT
         );
-        assert_eq!(unsafe { ratatoskr_receiver_local_port(ptr::null_mut()) }, 0);
+        assert_eq!(unsafe { ratatoskr_receiver_attached(ptr::null_mut()) }, 0);
         unsafe { ratatoskr_receiver_close(ptr::null_mut()) };
     }
 

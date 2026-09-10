@@ -38,11 +38,14 @@ extern "C" {
 
 typedef struct RatatoskrHandle RatatoskrHandle;
 
-/* Opens a media receiver. `video_relay` may be NULL, or a "host:port" that
- * every whole video access unit is also copied to as a raw byte stream over
- * UDP, for a local decoder that reads one (OBS's own ffmpeg source does).
- * Release with ratatoskr_receiver_close exactly once. */
-int ratatoskr_receiver_open(const char *bind,
+/* Dials the producer at `producer` ("host:port": the advertised media_endpoint)
+ * and keeps dialling until it answers, so it may be opened before the
+ * producer has started. This host admits nothing inbound. `video_relay` may
+ * be NULL, or a "host:port" that every whole video access unit is also
+ * copied to as a raw byte stream over UDP, for a local decoder that reads one
+ * (OBS's own ffmpeg source does). Release with ratatoskr_receiver_close
+ * exactly once. */
+int ratatoskr_receiver_open(const char *producer,
                             const char *runtime_id,
                             unsigned int connection_id,
                             const char *video_relay,
@@ -67,8 +70,8 @@ int ratatoskr_receiver_next_payload(RatatoskrHandle *handle,
  * the producer and this build disagree about the envelope. */
 uint64_t ratatoskr_receiver_undecodable(RatatoskrHandle *handle);
 
-/* The port actually bound; 0 if unavailable. */
-uint16_t ratatoskr_receiver_local_port(RatatoskrHandle *handle);
+/* 1 while the producer has answered and not since gone quiet, else 0. */
+int ratatoskr_receiver_attached(RatatoskrHandle *handle);
 
 /* Payloads and bytes actually delivered, never what was requested. Either out
  * pointer may be NULL. */
@@ -124,7 +127,8 @@ typedef struct RatatoskrStreamInfo {
     uint32_t default_video_bitrate_kbps;
     uint32_t default_latency_budget_ms;
     uint32_t media_packet_bytes;
-    uint32_t media_connection_id; /* the producer dials the receiver with this */
+    const char *media_endpoint;   /* "host:port" the producer serves from */
+    uint32_t media_connection_id; /* dial media_endpoint with this */
 } RatatoskrStreamInfo;
 
 /* Pulls every advertised stream from Odin ("rudp://host:port" or "host:port").
@@ -144,13 +148,12 @@ int ratatoskr_catalog_stream(const RatatoskrCatalog *catalog,
                              size_t index,
                              RatatoskrStreamInfo *out_info);
 
-/* Asks the producer of stream `index` to serve it to receiver_endpoint
- * ("host:port" where this receiver listens, as the producer reaches it).
+/* Asks the producer of stream `index` to serve it. This receiver is known to
+ * the producer by the catalog's runtime id; it dials media_endpoint itself.
  * Empty source ids mean none of that kind; zero bitrate or latency means the
  * producer's default. Blocks for the publish. */
 int ratatoskr_request_start(const RatatoskrCatalog *catalog,
                             size_t index,
-                            const char *receiver_endpoint,
                             const char *video_source_id,
                             const char *audio_source_id,
                             const char *video_codec,

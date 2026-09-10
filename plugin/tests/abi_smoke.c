@@ -19,7 +19,7 @@ static void check(int ok, const char *what)
 typedef int (*open_fn)(const char *, const char *, unsigned int, const char *, RatatoskrHandle **);
 typedef int (*poll_fn)(RatatoskrHandle *);
 typedef int (*next_fn)(RatatoskrHandle *, uint8_t *, size_t, size_t *, int *, int64_t *);
-typedef uint16_t (*port_fn)(RatatoskrHandle *);
+typedef int (*attached_fn)(RatatoskrHandle *);
 typedef void (*delivered_fn)(RatatoskrHandle *, uint64_t *, uint64_t *);
 typedef size_t (*err_fn)(char *, size_t);
 typedef void (*close_fn)(RatatoskrHandle *);
@@ -35,19 +35,20 @@ int main(int argc, char **argv)
     open_fn r_open = (open_fn)(void *)GetProcAddress(lib, "ratatoskr_receiver_open");
     poll_fn r_poll = (poll_fn)(void *)GetProcAddress(lib, "ratatoskr_receiver_poll");
     next_fn r_next = (next_fn)(void *)GetProcAddress(lib, "ratatoskr_receiver_next_payload");
-    port_fn r_port = (port_fn)(void *)GetProcAddress(lib, "ratatoskr_receiver_local_port");
+    attached_fn r_attached = (attached_fn)(void *)GetProcAddress(lib, "ratatoskr_receiver_attached");
     delivered_fn r_delivered = (delivered_fn)(void *)GetProcAddress(lib, "ratatoskr_receiver_delivered");
     err_fn r_err = (err_fn)(void *)GetProcAddress(lib, "ratatoskr_last_error");
     close_fn r_close = (close_fn)(void *)GetProcAddress(lib, "ratatoskr_receiver_close");
-    check(r_open && r_poll && r_next && r_port && r_delivered && r_err && r_close,
+    check(r_open && r_poll && r_next && r_attached && r_delivered && r_err && r_close,
           "every documented symbol is exported");
     if (failures) { printf("ABI SMOKE FAILED\n"); return 1; }
 
     RatatoskrHandle *handle = NULL;
-    check(r_open("127.0.0.1:0", "ratatoskr-abi-smoke", 0x0BE00001u, NULL, &handle) == RATATOSKR_OK,
-          "open returns OK");
+    /* nobody listens on port 9; the dial is sent, not answered */
+    check(r_open("127.0.0.1:9", "ratatoskr-abi-smoke", 0x0BE00001u, NULL, &handle) == RATATOSKR_OK,
+          "open returns OK without waiting for an answer");
     check(handle != NULL, "open yields a handle");
-    check(r_port(handle) != 0, "ephemeral bind resolves to a real port");
+    check(r_attached(handle) == 0, "an unanswered dial is not attached");
     check(r_poll(handle) == 0, "idle poll reports nothing waiting");
 
     size_t out_len = 12345;
@@ -70,14 +71,14 @@ int main(int argc, char **argv)
 
     handle = NULL;
     check(r_open("not-an-address", "x", 1, NULL, &handle) == RATATOSKR_ERR_ARGUMENT,
-          "a bad bind address is refused");
+          "a bad producer endpoint is refused");
     check(handle == NULL, "a refused open leaves no handle");
 
     char message[256];
     check(r_err(message, sizeof message) > 0, "a failure leaves a message");
     check(strstr(message, "not-an-address") != NULL, "the message names the bad input");
 
-    check(r_open("127.0.0.1:0", "x", 1, "not-a-relay", &handle) == RATATOSKR_ERR_ARGUMENT,
+    check(r_open("127.0.0.1:9", "x", 1, "not-a-relay", &handle) == RATATOSKR_ERR_ARGUMENT,
           "a bad video relay is refused");
 
     free_port_fn r_free_port = (free_port_fn)(void *)GetProcAddress(lib, "ratatoskr_free_udp_port");
@@ -89,7 +90,7 @@ int main(int argc, char **argv)
 
     r_close(NULL);
     check(r_poll(NULL) == RATATOSKR_ERR_ARGUMENT, "null handle is refused");
-    check(r_port(NULL) == 0, "null handle reports no port");
+    check(r_attached(NULL) == 0, "null handle is not attached");
 
     printf("%s\n", failures ? "ABI SMOKE FAILED" : "ABI SMOKE PASSED");
     return failures ? 1 : 0;

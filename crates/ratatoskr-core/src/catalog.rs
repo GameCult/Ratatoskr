@@ -2,9 +2,9 @@
 //!
 //! Producers advertise `gamecult.media_stream_advertisement` through Odin;
 //! a consumer pulls those to build a picker and publishes a
-//! `gamecult.media_stream_request` naming the stream, the sources, the codecs
-//! and the endpoint the producer should dial. The producer answers on the
-//! same request key. None of this touches the media channel, and none of it
+//! `gamecult.media_stream_request` naming the stream, the sources and the
+//! codecs. The producer answers on the same request key, and the consumer
+//! dials the endpoint the advertisement named. None of this touches the media channel, and none of it
 //! names Muninn: the picker shows whatever advertises.
 //!
 //! Everything below is `cultmesh-rs`. A node here is a small local CultCache
@@ -144,14 +144,13 @@ pub fn pull_request_state(
     node.get::<GameCultMediaStreamRequestRecord>(&key)
 }
 
-/// A start request as the OBS source would issue it. `receiver_endpoint` is
-/// where this consumer's media receiver listens; the producer dials it with
-/// the advertised connection id.
+/// A start request as the OBS source would issue it. It names no consumer
+/// endpoint: the consumer dials the advertised `media_endpoint` and is known
+/// to the producer by `receiver_id`.
 #[allow(clippy::too_many_arguments)]
 pub fn start_request(
     advertisement: &GameCultMediaStreamAdvertisementRecord,
     receiver_id: &str,
-    receiver_endpoint: SocketAddr,
     video_source_id: &str,
     audio_source_id: &str,
     video_codec: &str,
@@ -165,7 +164,6 @@ pub fn start_request(
         stream_id: advertisement.stream_id.clone(),
         producer_id: advertisement.producer_id.clone(),
         receiver_id: receiver_id.to_string(),
-        receiver_endpoint: receiver_endpoint.to_string(),
         action: "start".to_string(),
         state: "pending".to_string(),
         video_source_id: video_source_id.to_string(),
@@ -190,7 +188,6 @@ pub fn stop_request(
         stream_id: advertisement.stream_id.clone(),
         producer_id: advertisement.producer_id.clone(),
         receiver_id: receiver_id.to_string(),
-        receiver_endpoint: String::new(),
         action: "stop".to_string(),
         state: "pending".to_string(),
         video_source_id: String::new(),

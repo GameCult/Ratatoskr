@@ -75,10 +75,12 @@ Odin endpoint, pull every `gamecult.media_stream_advertisement` Odin holds,
 and offer each stream's video sources, audio sources and codecs from the
 advertisement itself, plus bitrate and latency budget (zero means the
 producer's default). Selecting and activating publishes a
-`gamecult.media_stream_request` naming this receiver's endpoint; the producer
-dials it with the advertised connection id and answers on the same request
-key. Nothing in the properties comes from configuration or from Muninn: the
-picker shows whatever advertises.
+`gamecult.media_stream_request`; the producer answers on the same request
+key, and the source dials the `media_endpoint` the advertisement named,
+repeating the dial until the producer answers. The consumer never listens:
+the machine running OBS admits nothing inbound and needs no firewall rule or
+port forward. Nothing in the properties comes from configuration or from
+Muninn: the picker shows whatever advertises.
 
 Video reaches OBS the way the previous plugin proved in the field: the core
 relays each whole access unit as a raw byte stream to a loopback UDP port and
@@ -144,9 +146,9 @@ is how the last receiver and sender drifted apart without either noticing.
 What is not here yet:
 
 - **A live frame.** No stream has crossed Raven → Starfire through this path.
-  It needs Muninn on Raven running a build that advertises and answers
-  (`b679fc2` or later) and Starfire admitting inbound UDP on the receiver's
-  port.
+  It needs Muninn on Raven running a build that advertises a media
+  endpoint, listens on it, and answers requests; Raven's firewall admits
+  that one UDP port. Starfire admits nothing.
 - **Opus.** The request carries `audio_codec`; the only producer today emits
   `pcm-f32le-interleaved`. When Opus lands, the audio path here grows a
   decoder or a second `ffmpeg_source` child.

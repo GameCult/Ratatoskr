@@ -26,7 +26,6 @@ OBS_MODULE_USE_DEFAULT_LOCALE("ratatoskr", "en-US")
 
 #define SETTING_ODIN "odin"
 #define SETTING_RECEIVER_ID "receiver_id"
-#define SETTING_RECEIVER_HOST "receiver_host"
 #define SETTING_STREAM "stream_id"
 #define SETTING_VIDEO_SOURCE "video_source_id"
 #define SETTING_AUDIO_SOURCE "audio_source_id"
@@ -45,7 +44,6 @@ struct ratatoskr_source {
 	/* settings as last applied */
 	char *odin;
 	char *receiver_id;
-	char *receiver_host;
 	char *stream_id;
 	char *video_source_id;
 	char *audio_source_id;
@@ -261,34 +259,34 @@ static void start_stream(struct ratatoskr_source *ctx)
 	ctx->audio_channels = info.audio_channels;
 	ctx->relay_port = wants_video ? ratatoskr_free_udp_port() : 0;
 
+	/* Ask first, then dial: the request spins the producer up and the dial
+	 * is repeated until it answers. Nothing here listens. */
+	pthread_mutex_lock(&ctx->catalog_mutex);
+	int rc = ratatoskr_request_start(ctx->catalog, index, wants_video ? ctx->video_source_id : NONE_ID,
+					 wants_audio ? ctx->audio_source_id : NONE_ID, ctx->video_codec, ctx->audio_codec,
+					 ctx->bitrate_kbps, ctx->latency_ms);
+	pthread_mutex_unlock(&ctx->catalog_mutex);
+	if (rc != RATATOSKR_OK) {
+		log_last_error("start request failed");
+		return;
+	}
+	blog(LOG_INFO, "[ratatoskr] asked %s for %s (video=%s audio=%s %s/%s %u kbps, %u ms); dialling %s",
+	     info.producer_id, ctx->stream_id, wants_video ? ctx->video_source_id : "-",
+	     wants_audio ? ctx->audio_source_id : "-", ctx->video_codec, ctx->audio_codec, ctx->bitrate_kbps,
+	     ctx->latency_ms, info.media_endpoint);
+
 	char relay[64] = {0};
 	if (wants_video)
 		snprintf(relay, sizeof(relay), "127.0.0.1:%u", (unsigned)ctx->relay_port);
-	int rc = ratatoskr_receiver_open("0.0.0.0:0", ctx->receiver_id, info.media_connection_id,
-					 wants_video ? relay : NULL, &ctx->receiver);
+	rc = ratatoskr_receiver_open(info.media_endpoint, ctx->receiver_id, info.media_connection_id,
+				     wants_video ? relay : NULL, &ctx->receiver);
 	if (rc != RATATOSKR_OK) {
 		log_last_error("receiver open failed");
+		stop_stream(ctx);
 		return;
 	}
 	if (wants_video)
 		create_video_child(ctx);
-
-	char endpoint[512];
-	snprintf(endpoint, sizeof(endpoint), "%s:%u", ctx->receiver_host,
-		 (unsigned)ratatoskr_receiver_local_port(ctx->receiver));
-	pthread_mutex_lock(&ctx->catalog_mutex);
-	rc = ratatoskr_request_start(ctx->catalog, index, endpoint, wants_video ? ctx->video_source_id : NONE_ID,
-				     wants_audio ? ctx->audio_source_id : NONE_ID, ctx->video_codec, ctx->audio_codec,
-				     ctx->bitrate_kbps, ctx->latency_ms);
-	pthread_mutex_unlock(&ctx->catalog_mutex);
-	if (rc != RATATOSKR_OK) {
-		log_last_error("start request failed");
-		stop_stream(ctx);
-		return;
-	}
-	blog(LOG_INFO, "[ratatoskr] asked %s for %s -> %s (video=%s audio=%s %s/%s %u kbps, %u ms)", info.producer_id,
-	     ctx->stream_id, endpoint, wants_video ? ctx->video_source_id : "-", wants_audio ? ctx->audio_source_id : "-",
-	     ctx->video_codec, ctx->audio_codec, ctx->bitrate_kbps, ctx->latency_ms);
 
 	ctx->pump_running = true;
 	if (pthread_create(&ctx->pump, NULL, pump_loop, ctx) != 0) {
@@ -310,7 +308,6 @@ static void ratatoskr_get_defaults(obs_data_t *settings)
 {
 	obs_data_set_default_string(settings, SETTING_ODIN, DEFAULT_ODIN);
 	obs_data_set_default_string(settings, SETTING_RECEIVER_ID, "obs");
-	obs_data_set_default_string(settings, SETTING_RECEIVER_HOST, "127.0.0.1");
 	obs_data_set_default_string(settings, SETTING_VIDEO_CODEC, "h264");
 	obs_data_set_default_string(settings, SETTING_AUDIO_CODEC, "pcm-f32le-interleaved");
 	obs_data_set_default_int(settings, SETTING_BITRATE, 0);
@@ -321,7 +318,6 @@ static void apply_settings(struct ratatoskr_source *ctx, obs_data_t *settings)
 {
 	set_string(&ctx->odin, obs_data_get_string(settings, SETTING_ODIN));
 	set_string(&ctx->receiver_id, obs_data_get_string(settings, SETTING_RECEIVER_ID));
-	set_string(&ctx->receiver_host, obs_data_get_string(settings, SETTING_RECEIVER_HOST));
 	set_string(&ctx->stream_id, obs_data_get_string(settings, SETTING_STREAM));
 	set_string(&ctx->video_source_id, obs_data_get_string(settings, SETTING_VIDEO_SOURCE));
 	set_string(&ctx->audio_source_id, obs_data_get_string(settings, SETTING_AUDIO_SOURCE));
@@ -351,7 +347,6 @@ static void ratatoskr_destroy(void *data)
 	bfree(ctx->buffer);
 	bfree(ctx->odin);
 	bfree(ctx->receiver_id);
-	bfree(ctx->receiver_host);
 	bfree(ctx->stream_id);
 	bfree(ctx->video_source_id);
 	bfree(ctx->audio_source_id);
@@ -483,8 +478,6 @@ static obs_properties_t *ratatoskr_get_properties(void *data)
 
 	obs_properties_add_text(props, SETTING_ODIN, obs_module_text("Ratatoskr.Odin"), OBS_TEXT_DEFAULT);
 	obs_properties_add_text(props, SETTING_RECEIVER_ID, obs_module_text("Ratatoskr.ReceiverId"), OBS_TEXT_DEFAULT);
-	obs_properties_add_text(props, SETTING_RECEIVER_HOST, obs_module_text("Ratatoskr.ReceiverHost"),
-				OBS_TEXT_DEFAULT);
 	obs_properties_add_button(props, "refresh", obs_module_text("Ratatoskr.Refresh"), on_refresh);
 
 	obs_property_t *streams = obs_properties_add_list(props, SETTING_STREAM, obs_module_text("Ratatoskr.Stream"),

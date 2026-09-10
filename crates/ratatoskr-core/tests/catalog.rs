@@ -144,6 +144,7 @@ fn advertisement(stream_id: &str) -> GameCultMediaStreamAdvertisementRecord {
         default_video_bitrate_kbps: 12_000,
         default_latency_budget_ms: 250,
         media_packet_bytes: 848,
+        media_endpoint: "10.77.0.2:5220".into(),
         media_connection_id: 0x6d75_0001,
         updated_at: "2026-09-10T00:00:00Z".into(),
     }
@@ -176,12 +177,12 @@ fn the_picker_sees_what_advertises_and_a_request_comes_back_answered() -> Result
     assert_eq!(pulled.rejected.len(), 1);
     assert_eq!(pulled.rejected[0].0, "broken");
     assert_eq!(pulled.streams[0].audio_channels, 2);
+    assert_eq!(pulled.streams[0].media_endpoint, "10.77.0.2:5220", "where to dial comes from the advertisement");
 
     // Ask for it, then read back what the mesh holds under the request key.
     let request = start_request(
         &pulled.streams[0],
         "starfire.obs",
-        "192.168.178.146:5204".parse()?,
         "display:0",
         "wasapi-loopback:Realtek",
         "h264",
@@ -209,7 +210,7 @@ fn the_picker_sees_what_advertises_and_a_request_comes_back_answered() -> Result
 fn a_request_that_names_a_source_without_a_codec_is_refused_before_it_leaves() -> Result<()> {
     let odin = Odin::start()?;
     let options = options(&odin, "starfire.obs");
-    let mut request = start_request(&advertisement("s"), "starfire.obs", "127.0.0.1:1".parse()?, "display:0", "", "h264", "", 0, 0, "t");
+    let mut request = start_request(&advertisement("s"), "starfire.obs", "display:0", "", "h264", "", 0, 0, "t");
     request.video_codec.clear();
     let error = publish_request(&options, &request).unwrap_err();
     assert!(error.to_string().contains("codec"), "{error}");
