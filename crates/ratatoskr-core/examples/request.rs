@@ -27,7 +27,7 @@ fn main() -> anyhow::Result<()> {
     if action == "state" {
         return match pull_request_state(&options, stream_id)? {
             Some(held) => {
-                println!("{} {} state={} detail={:?} updated={}", held.request_id, held.action, held.state, held.detail, held.updated_at);
+                println!("{} {} state={} detail={:?} video={:?} audio={:?} updated={}", held.request_id, held.action, held.state, held.detail, held.video_source_id, held.audio_source_id, held.updated_at);
                 Ok(())
             }
             None => {
