@@ -399,6 +399,14 @@ impl RatatoskrReceiver {
     pub fn feedback_stats(&self) -> FeedbackStats {
         self.feedback.stats()
     }
+
+    /// The transport's own accounting: bytes, frames, reliable expiries and
+    /// fragment sets given up on. A payload the transport evicted never
+    /// reaches [`delivered`](Self::delivered), so this is where a producer's
+    /// "everything was acknowledged" and a receiver's "I saw nothing" meet.
+    pub fn transport_stats(&self) -> cultnet_rs::CultNetTransportStats {
+        self.transport.stats()
+    }
 }
 
 /// A fresh client session towards the producer. A new socket each time: a

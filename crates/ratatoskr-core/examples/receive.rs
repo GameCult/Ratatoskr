@@ -56,8 +56,9 @@ fn main() -> anyhow::Result<()> {
             let (payloads, bytes) = receiver.delivered();
             let video = receiver.video_stats();
             let feedback = receiver.feedback_stats();
+            let transport = receiver.transport_stats();
             println!(
-                "{:>3}s attached={} frames={frames} (key {keyframes}) audio={audio} payloads={payloads} bytes={bytes} repaired={} expired={} redials={} fed_back={} repairs_asked={} keyframes_asked={}",
+                "{:>3}s attached={} frames={frames} (key {keyframes}) audio={audio} payloads={payloads} bytes={bytes} repaired={} expired={} redials={} fed_back={} repairs_asked={} keyframes_asked={} | wire_frames={} wire_bytes={} evicted_sets={} undecodable={} rejected={}",
                 started.elapsed().as_secs(),
                 receiver.attached(),
                 video.repaired_chunks,
@@ -66,6 +67,11 @@ fn main() -> anyhow::Result<()> {
                 feedback.sent,
                 feedback.chunks_requested,
                 feedback.keyframes_requested,
+                transport.frames_received,
+                transport.bytes_received,
+                transport.fragment_sets_evicted,
+                receiver.undecodable(),
+                receiver.rejected(),
             );
             next_line += Duration::from_secs(1);
         }
