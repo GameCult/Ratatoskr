@@ -15,9 +15,8 @@ use std::ffi::{CStr, c_char, c_int, c_uint};
 use std::net::SocketAddr;
 use std::ptr;
 
-use cultnet_rs::GameCultMediaWireRecord;
-
 use crate::receiver::{MediaEvent, RatatoskrReceiver, ReceiverOptions};
+use crate::video::VideoAssemblerOptions;
 
 pub const RATATOSKR_OK: c_int = 0;
 pub const RATATOSKR_NONE: c_int = 1;
@@ -26,24 +25,11 @@ pub const RATATOSKR_ERR_OPEN: c_int = -2;
 pub const RATATOSKR_ERR_POLL: c_int = -3;
 pub const RATATOSKR_ERR_BUFFER_TOO_SMALL: c_int = -4;
 
-/// What a payload is, so a caller can route it without parsing the record.
+/// What a payload is, so a caller can route it without parsing anything.
+/// A video payload is a whole access unit: chunking and parity are the
+/// transport's business and never cross this boundary.
 pub const RATATOSKR_KIND_VIDEO: c_int = 0;
-pub const RATATOSKR_KIND_VIDEO_PARITY: c_int = 1;
-pub const RATATOSKR_KIND_AUDIO: c_int = 2;
-pub const RATATOSKR_KIND_FEEDBACK: c_int = 3;
-
-fn kind_and_payload(record: GameCultMediaWireRecord) -> (c_int, Vec<u8>) {
-    match record {
-        GameCultMediaWireRecord::Video(record) => (RATATOSKR_KIND_VIDEO, record.payload),
-        GameCultMediaWireRecord::VideoParity(record) => {
-            (RATATOSKR_KIND_VIDEO_PARITY, record.payload)
-        }
-        GameCultMediaWireRecord::Audio(record) => (RATATOSKR_KIND_AUDIO, record.payload),
-        // Feedback flows the other way and carries no media; a caller that asked
-        // for payloads should not be handed one.
-        GameCultMediaWireRecord::Feedback(_) => (RATATOSKR_KIND_FEEDBACK, Vec::new()),
-    }
-}
+pub const RATATOSKR_KIND_AUDIO: c_int = 1;
 
 thread_local! {
     static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
@@ -93,6 +79,7 @@ pub unsafe extern "C" fn ratatoskr_receiver_open(
         bind,
         runtime_id,
         connection_id: connection_id as u32,
+        video: VideoAssemblerOptions::default(),
     }) {
         Ok(receiver) => {
             let handle = Box::new(RatatoskrHandle {
@@ -125,13 +112,20 @@ pub unsafe extern "C" fn ratatoskr_receiver_poll(handle: *mut RatatoskrHandle) -
         Ok(events) => {
             for event in events {
                 match event {
-                    MediaEvent::Record { record } => {
-                        let (kind, payload) = kind_and_payload(*record);
-                        if !payload.is_empty() {
-                            handle.pending.push_back((kind, payload));
+                    MediaEvent::VideoFrame { frame } => {
+                        handle.pending.push_back((RATATOSKR_KIND_VIDEO, frame.bytes));
+                    }
+                    MediaEvent::Audio { record } => {
+                        if !record.payload.is_empty() {
+                            handle.pending.push_back((RATATOSKR_KIND_AUDIO, record.payload));
                         }
                     }
-                    MediaEvent::Undecodable { reason, .. } => set_last_error(reason),
+                    // Given-up frames and feedback carry no media for a
+                    // renderer; the counters say they happened.
+                    MediaEvent::VideoFrameExpired { .. } | MediaEvent::Feedback { .. } => {}
+                    MediaEvent::Undecodable { reason, .. } | MediaEvent::Rejected { reason } => {
+                        set_last_error(reason)
+                    }
                     MediaEvent::ProducerAttached { remote } => handle.attached = Some(remote),
                     MediaEvent::ProducerDetached { .. } => handle.attached = None,
                 }
@@ -233,6 +227,33 @@ pub unsafe extern "C" fn ratatoskr_receiver_delivered(
     }
     if !out_bytes.is_null() {
         unsafe { *out_bytes = bytes };
+    }
+}
+
+/// What became of the video frames: completed, chunks given back by parity,
+/// and frames given up on (aged out or evicted). Any out pointer may be null.
+///
+/// # Safety
+/// `handle` must be live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ratatoskr_receiver_video_stats(
+    handle: *mut RatatoskrHandle,
+    out_completed: *mut u64,
+    out_repaired_chunks: *mut u64,
+    out_given_up: *mut u64,
+) {
+    let Some(handle) = (unsafe { handle.as_ref() }) else {
+        return;
+    };
+    let stats = handle.receiver.video_stats();
+    if !out_completed.is_null() {
+        unsafe { *out_completed = stats.completed };
+    }
+    if !out_repaired_chunks.is_null() {
+        unsafe { *out_repaired_chunks = stats.repaired_chunks };
+    }
+    if !out_given_up.is_null() {
+        unsafe { *out_given_up = stats.expired + stats.evicted };
     }
 }
 

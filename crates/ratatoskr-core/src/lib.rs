@@ -17,8 +17,8 @@
 //! - **Owner:** Ratatoskr owns turning a CultMesh media stream into decoded
 //!   frames a renderer can present, and the lifetime of that subscription.
 //! - **Inputs:** typed media records over a CultNet RUDP media channel.
-//! - **Outputs:** ordered, reassembled media events, plus the receiver feedback
-//!   a producer needs to adapt.
+//! - **Outputs:** whole, repaired video frames and audio packets as events,
+//!   plus what a producer would need to hear back when a frame was lost.
 //! - **Not Ratatoskr's:** the media contract (CultLib), discovery and rendezvous
 //!   (Odin), what gets captured (Muninn), how it is presented (the renderer).
 //!
@@ -27,8 +27,10 @@
 
 pub mod ffi;
 mod receiver;
+pub mod video;
 
 pub use receiver::{MediaEvent, RatatoskrReceiver, ReceiverOptions};
+pub use video::{ExpiredFrame, ExpiryReason, FrameKey, VideoAssembler, VideoAssemblerOptions, VideoFrame, VideoStats};
 
 /// The CultNet channel media rides. Named here once so nothing downstream
 /// guesses it from a string literal.

@@ -26,11 +26,11 @@ extern "C" {
 #define RATATOSKR_ERR_POLL (-3)
 #define RATATOSKR_ERR_BUFFER_TOO_SMALL (-4)
 
-/* What a payload is, so a caller can route it without parsing the record. */
+/* What a payload is, so a caller can route it without parsing anything. A
+ * video payload is a whole access unit (Annex B for H.264/H.265): chunking and
+ * parity are the transport's business and never cross this boundary. */
 #define RATATOSKR_KIND_VIDEO 0
-#define RATATOSKR_KIND_VIDEO_PARITY 1
-#define RATATOSKR_KIND_AUDIO 2
-#define RATATOSKR_KIND_FEEDBACK 3
+#define RATATOSKR_KIND_AUDIO 1
 
 typedef struct RatatoskrHandle RatatoskrHandle;
 
@@ -64,6 +64,13 @@ uint16_t ratatoskr_receiver_local_port(RatatoskrHandle *handle);
 void ratatoskr_receiver_delivered(RatatoskrHandle *handle,
                                   uint64_t *out_payloads,
                                   uint64_t *out_bytes);
+
+/* What became of the video frames: completed, chunks given back by parity, and
+ * frames given up on (aged out or evicted). Any out pointer may be NULL. */
+void ratatoskr_receiver_video_stats(RatatoskrHandle *handle,
+                                    uint64_t *out_completed,
+                                    uint64_t *out_repaired_chunks,
+                                    uint64_t *out_given_up);
 
 /* Last error on this thread. Returns the full length; truncates to capacity. */
 size_t ratatoskr_last_error(char *buffer, size_t capacity);

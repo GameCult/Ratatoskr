@@ -50,6 +50,7 @@ does not know or care which producer it is attached to.
 ```
 crates/ratatoskr-core/     Rust. The transport-facing half.
   src/receiver.rs          Subscription over cultnet-rs. No transport of its own.
+  src/video.rs             Chunks and parity in, whole access units out.
   src/ffi.rs               The C ABI, deliberately small.
 plugin/
   include/ratatoskr.h      Hand-written header. Small enough to read in one sitting.
@@ -64,9 +65,26 @@ be checked with any compiler.
 ## Status
 
 Early. The core opens a CultNet media subscription, drains it, decodes the
-CultMesh media envelope, and hands typed payloads across the ABI with a kind
-discriminator so a caller routes video and audio without parsing records itself.
-Tests sit on both sides of that boundary.
+CultMesh media envelope, reassembles video, and hands whole access units and
+audio packets across the ABI with a kind discriminator so a caller routes them
+without parsing records itself. Tests sit on both sides of that boundary.
+
+Video reassembly follows the contract's erasure code and adds only receiver
+policy. The producer splits each access unit into datagram-sized chunks and,
+for frames of more than one chunk, XOR stripe parity: shard `s` of
+`parity_count` covers every chunk whose index is `s` modulo `parity_count`, so
+each stripe gives back exactly one lost chunk. What the contract does not say
+and this crate decides: an incomplete frame is given up on after 250 ms on the
+receiver's clock, or sooner if 64 newer frames are pending — the bound evicts,
+it never errors; a completed frame is complete forever, so late chunks are
+discarded rather than reopening it; and after any loss nothing reaches the
+renderer until the next keyframe, because a decoder fed a frame whose reference
+is missing produces garbage that looks like a stream. Every one of those is a
+counter in `VideoStats`, observed rather than configured.
+
+Audio is not chunked on the wire and carries no parity, so audio packets pass
+through as sent. The previous receiver's GF(256) audio erasure code had no
+producer; it is not missing here, it never existed on this contract.
 
 A payload that arrives on the media channel and fails to decode is surfaced as
 `Undecodable` and counted, never silently dropped. A consumer that discards what
@@ -75,13 +93,9 @@ is how the last receiver and sender drifted apart without either noticing.
 
 What is not here yet:
 
-- **Frame reassembly and FEC.** The media records carry chunking and parity
-  (`gamecult.media_video_access_unit`, `gamecult.media_video_parity_shard.v2`).
-  A dead Rust implementation of exactly this survives in Muninn's
-  `media_packetizer.rs`, kept because it is the reference the C++ receiver
-  drifted away from. It is the natural seed for this half and should move here.
 - **Receiver feedback.** `gamecult.media_receiver_feedback` is the return path a
-  producer adapts to. Nothing here emits it yet.
+  producer adapts to. The assembler already names what an expired frame lacked
+  (`ExpiredFrame::missing_chunk_keys`); nothing here sends it yet.
 - **The OBS plugin itself.** Roughly 1,200 lines of genuine OBS work — source
   registration, the ffmpeg audio decode child, the program texture source, the
   stem IPC — is worth porting from the Mimir plugin rather than rewriting. The
