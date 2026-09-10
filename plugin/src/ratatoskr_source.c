@@ -35,7 +35,9 @@ OBS_MODULE_USE_DEFAULT_LOCALE("ratatoskr", "en-US")
 #define SETTING_LATENCY "latency_budget_ms"
 #define SETTING_STATUS "status"
 
-#define DEFAULT_ODIN "rudp://10.77.0.1:5210"
+/* Odin's stable rendezvous route as Idunn publishes it (nginx stream proxy on
+ * yggdrasil); the daemon's own port behind it moves per release. */
+#define DEFAULT_ODIN "rudp://10.77.0.1:17971"
 #define NONE_ID ""
 
 struct ratatoskr_source {
