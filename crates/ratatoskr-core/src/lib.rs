@@ -25,12 +25,17 @@
 //! Ratatoskr is a consumer of a general contract. It is not the contract, and it
 //! has no opinion about who produced the stream.
 
+pub mod feedback;
 pub mod ffi;
 mod receiver;
 pub mod video;
 
 pub use receiver::{MediaEvent, RatatoskrReceiver, ReceiverOptions};
-pub use video::{ExpiredFrame, ExpiryReason, FrameKey, VideoAssembler, VideoAssemblerOptions, VideoFrame, VideoStats};
+pub use feedback::{FeedbackOptions, FeedbackStats};
+pub use video::{
+    ExpiredFrame, ExpiryReason, FrameKey, RepairRequest, VideoAssembler, VideoAssemblerOptions,
+    VideoFrame, VideoStats,
+};
 
 /// The CultNet channel media rides. Named here once so nothing downstream
 /// guesses it from a string literal.

@@ -83,6 +83,14 @@ pub struct VideoAssemblerOptions {
     pub max_pending_frames: usize,
     /// Completed frames remembered so their late chunks are recognised as late.
     pub remembered_frames: usize,
+    /// How long a frame waits for stragglers before its missing chunks are
+    /// asked for. Below one reorder window this asks for chunks still in
+    /// flight.
+    pub repair_first_wait: Duration,
+    /// How long after a repair request before asking again.
+    pub repair_retry_wait: Duration,
+    /// Repair requests per frame before it is left to age out.
+    pub repair_max_requests: u32,
 }
 
 impl Default for VideoAssemblerOptions {
@@ -93,6 +101,11 @@ impl Default for VideoAssemblerOptions {
             max_frame_age: Duration::from_millis(250),
             max_pending_frames: 64,
             remembered_frames: 256,
+            // The previous receiver's field-tested cadence: 64 ms, then every
+            // 32 ms, three times.
+            repair_first_wait: Duration::from_millis(64),
+            repair_retry_wait: Duration::from_millis(32),
+            repair_max_requests: 3,
         }
     }
 }
@@ -109,6 +122,15 @@ pub struct VideoStats {
     /// Complete frames withheld because a reference was lost and no keyframe
     /// has arrived since.
     pub awaiting_keyframe_discarded: u64,
+    /// Repair requests raised for frames still waiting.
+    pub repairs_requested: u64,
+}
+
+/// A frame still waiting, and the chunks it wants asked for again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepairRequest {
+    pub key: FrameKey,
+    pub missing_chunk_keys: Vec<String>,
 }
 
 /// The metadata every chunk and shard of one frame must agree on.
@@ -168,6 +190,8 @@ struct Assembly {
     parity: BTreeMap<u16, ParityShard>,
     first_seen: Instant,
     repaired: u16,
+    repair_requests: u32,
+    last_repair_request: Option<Instant>,
 }
 
 impl Assembly {
@@ -178,6 +202,8 @@ impl Assembly {
             parity: BTreeMap::new(),
             first_seen: now,
             repaired: 0,
+            repair_requests: 0,
+            last_repair_request: None,
         }
     }
 
@@ -269,6 +295,7 @@ pub struct VideoAssembler {
     pending: BTreeMap<FrameKey, Assembly>,
     remembered: VecDeque<FrameKey>,
     waiting_for_keyframe: bool,
+    highest_delivered_frame_id: Option<u64>,
     stats: VideoStats,
 }
 
@@ -286,6 +313,7 @@ impl VideoAssembler {
             remembered: VecDeque::new(),
             // A decoder has nothing to build on until the first keyframe.
             waiting_for_keyframe: true,
+            highest_delivered_frame_id: None,
             stats: VideoStats::default(),
         }
     }
@@ -355,6 +383,38 @@ impl VideoAssembler {
         aged.into_iter()
             .filter_map(|key| self.give_up(&key, ExpiryReason::Aged))
             .collect()
+    }
+
+    /// Frames that have waited long enough that their missing chunks should
+    /// be asked for, each at most `repair_max_requests` times. Call after
+    /// draining the transport, before `expire`.
+    pub fn due_repairs(&mut self, now: Instant) -> Vec<RepairRequest> {
+        let mut due = Vec::new();
+        for (key, assembly) in &mut self.pending {
+            if assembly.is_complete() || assembly.repair_requests >= self.options.repair_max_requests {
+                continue;
+            }
+            let (since, wait) = match assembly.last_repair_request {
+                None => (assembly.first_seen, self.options.repair_first_wait),
+                Some(last) => (last, self.options.repair_retry_wait),
+            };
+            if now.duration_since(since) < wait {
+                continue;
+            }
+            assembly.repair_requests += 1;
+            assembly.last_repair_request = Some(now);
+            self.stats.repairs_requested += 1;
+            due.push(RepairRequest {
+                key: key.clone(),
+                missing_chunk_keys: assembly.missing_chunk_keys(key.frame_id),
+            });
+        }
+        due
+    }
+
+    /// The newest frame actually handed to the renderer.
+    pub fn highest_delivered_frame_id(&self) -> Option<u64> {
+        self.highest_delivered_frame_id
     }
 
     pub fn pending_frames(&self) -> usize {
@@ -427,6 +487,10 @@ impl VideoAssembler {
             }
             self.waiting_for_keyframe = false;
         }
+        self.highest_delivered_frame_id = Some(
+            self.highest_delivered_frame_id
+                .map_or(frame.frame_id, |current| current.max(frame.frame_id)),
+        );
         Some(frame)
     }
 
@@ -712,6 +776,53 @@ mod tests {
         assert!(assembler.insert_chunk(records[0].clone(), now)?.is_none());
         let frame = assembler.insert_chunk(records[1].clone(), now)?.expect("completes");
         assert_eq!(frame.bytes, vec![1, 2, 3]);
+        Ok(())
+    }
+
+    #[test]
+    fn repairs_are_asked_for_after_a_wait_then_on_a_retry_cadence_then_not_at_all() -> Result<()> {
+        let start = Instant::now();
+        let mut assembler = VideoAssembler::new(VideoAssemblerOptions {
+            repair_first_wait: Duration::from_millis(64),
+            repair_retry_wait: Duration::from_millis(32),
+            repair_max_requests: 2,
+            ..Default::default()
+        });
+        let records = chunks(9, true, &[1, 2, 3, 4, 5], 2);
+        assembler.insert_chunk(records[0].clone(), start)?;
+
+        assert!(assembler.due_repairs(start + Duration::from_millis(63)).is_empty(), "stragglers get a window");
+        let first = assembler.due_repairs(start + Duration::from_millis(64));
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].key, key(9));
+        assert_eq!(first[0].missing_chunk_keys, vec![video_chunk_feedback_key(9, 1), video_chunk_feedback_key(9, 2)]);
+        assert!(assembler.due_repairs(start + Duration::from_millis(80)).is_empty(), "not before the retry wait");
+
+        // A repair that arrives narrows the next request.
+        assembler.insert_chunk(records[1].clone(), start + Duration::from_millis(90))?;
+        let second = assembler.due_repairs(start + Duration::from_millis(96));
+        assert_eq!(second[0].missing_chunk_keys, vec![video_chunk_feedback_key(9, 2)]);
+
+        assert!(assembler.due_repairs(start + Duration::from_millis(200)).is_empty(), "the budget is spent");
+        assert_eq!(assembler.stats().repairs_requested, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn the_highest_delivered_frame_is_what_the_renderer_got() -> Result<()> {
+        let now = Instant::now();
+        let mut assembler = VideoAssembler::default();
+        assert_eq!(assembler.highest_delivered_frame_id(), None);
+        let nine = chunks(9, true, &[1, 2], 2);
+        assembler.insert_chunk(nine[0].clone(), now)?;
+        assert_eq!(assembler.highest_delivered_frame_id(), Some(9));
+        // A frame withheld for want of a keyframe was not delivered.
+        let ten = chunks(10, false, &[3, 4, 5], 2);
+        assembler.insert_chunk(ten[0].clone(), now)?;
+        assembler.expire(now + Duration::from_secs(1));
+        let eleven = chunks(11, false, &[3, 4], 2);
+        assembler.insert_chunk(eleven[0].clone(), now)?;
+        assert_eq!(assembler.highest_delivered_frame_id(), Some(9));
         Ok(())
     }
 

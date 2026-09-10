@@ -15,6 +15,7 @@ use std::ffi::{CStr, c_char, c_int, c_uint};
 use std::net::SocketAddr;
 use std::ptr;
 
+use crate::feedback::FeedbackOptions;
 use crate::receiver::{MediaEvent, RatatoskrReceiver, ReceiverOptions};
 use crate::video::VideoAssemblerOptions;
 
@@ -80,6 +81,7 @@ pub unsafe extern "C" fn ratatoskr_receiver_open(
         runtime_id,
         connection_id: connection_id as u32,
         video: VideoAssemblerOptions::default(),
+        feedback: FeedbackOptions::default(),
     }) {
         Ok(receiver) => {
             let handle = Box::new(RatatoskrHandle {
@@ -122,10 +124,12 @@ pub unsafe extern "C" fn ratatoskr_receiver_poll(handle: *mut RatatoskrHandle) -
                     }
                     // Given-up frames and feedback carry no media for a
                     // renderer; the counters say they happened.
-                    MediaEvent::VideoFrameExpired { .. } | MediaEvent::Feedback { .. } => {}
-                    MediaEvent::Undecodable { reason, .. } | MediaEvent::Rejected { reason } => {
-                        set_last_error(reason)
-                    }
+                    MediaEvent::VideoFrameExpired { .. }
+                    | MediaEvent::Feedback { .. }
+                    | MediaEvent::FeedbackSent { .. } => {}
+                    MediaEvent::Undecodable { reason, .. }
+                    | MediaEvent::Rejected { reason }
+                    | MediaEvent::FeedbackNotSent { reason } => set_last_error(reason),
                     MediaEvent::ProducerAttached { remote } => handle.attached = Some(remote),
                     MediaEvent::ProducerDetached { .. } => handle.attached = None,
                 }
@@ -254,6 +258,36 @@ pub unsafe extern "C" fn ratatoskr_receiver_video_stats(
     }
     if !out_given_up.is_null() {
         unsafe { *out_given_up = stats.expired + stats.evicted };
+    }
+}
+
+/// What was said back to the producer: records sent, chunks asked for again,
+/// keyframes requested, and records the transport refused. Any out pointer
+/// may be null.
+///
+/// # Safety
+/// `handle` must be live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ratatoskr_receiver_feedback_stats(
+    handle: *mut RatatoskrHandle,
+    out_sent: *mut u64,
+    out_chunks_requested: *mut u64,
+    out_keyframes_requested: *mut u64,
+    out_not_sent: *mut u64,
+) {
+    let Some(handle) = (unsafe { handle.as_ref() }) else {
+        return;
+    };
+    let stats = handle.receiver.feedback_stats();
+    for (out, value) in [
+        (out_sent, stats.sent),
+        (out_chunks_requested, stats.chunks_requested),
+        (out_keyframes_requested, stats.keyframes_requested),
+        (out_not_sent, stats.not_sent),
+    ] {
+        if !out.is_null() {
+            unsafe { *out = value };
+        }
     }
 }
 

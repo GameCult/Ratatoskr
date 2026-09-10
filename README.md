@@ -51,6 +51,7 @@ does not know or care which producer it is attached to.
 crates/ratatoskr-core/     Rust. The transport-facing half.
   src/receiver.rs          Subscription over cultnet-rs. No transport of its own.
   src/video.rs             Chunks and parity in, whole access units out.
+  src/feedback.rs          What the receiver says back, and how often.
   src/ffi.rs               The C ABI, deliberately small.
 plugin/
   include/ratatoskr.h      Hand-written header. Small enough to read in one sitting.
@@ -86,6 +87,20 @@ Audio is not chunked on the wire and carries no parity, so audio packets pass
 through as sent. The previous receiver's GF(256) audio erasure code had no
 producer; it is not missing here, it never existed on this contract.
 
+The return path is `gamecult.media_receiver_feedback`, built by CultLib's
+`build_receiver_feedback` so both ends agree on its shape, and sent back down
+the producer's own session on the media channel. A frame still waiting is
+asked for by chunk after 64 ms, then every 32 ms, three times — the previous
+receiver's field-tested cadence — and a repair request never asks for a
+keyframe, because it exists so that one is not needed. A frame given up on is
+reported late and, once per 500 ms, a keyframe is requested, since whatever
+depended on it cannot be decoded either. `highest_decodable_frame_id` is the
+newest frame actually handed to the renderer. `jitter_us` and
+`decode_queue_us` are sent as zero: the producer reads neither, and "not
+measured" is the truth where a plausible number would not be. With no
+producer attached, feedback is reported as not sent and counted, never
+dropped on the floor.
+
 A payload that arrives on the media channel and fails to decode is surfaced as
 `Undecodable` and counted, never silently dropped. A consumer that discards what
 it cannot parse gives a producer no way to learn its stream is unreadable, which
@@ -93,9 +108,6 @@ is how the last receiver and sender drifted apart without either noticing.
 
 What is not here yet:
 
-- **Receiver feedback.** `gamecult.media_receiver_feedback` is the return path a
-  producer adapts to. The assembler already names what an expired frame lacked
-  (`ExpiredFrame::missing_chunk_keys`); nothing here sends it yet.
 - **The OBS plugin itself.** Roughly 1,200 lines of genuine OBS work — source
   registration, the ffmpeg audio decode child, the program texture source, the
   stem IPC — is worth porting from the Mimir plugin rather than rewriting. The

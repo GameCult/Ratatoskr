@@ -72,6 +72,15 @@ void ratatoskr_receiver_video_stats(RatatoskrHandle *handle,
                                     uint64_t *out_repaired_chunks,
                                     uint64_t *out_given_up);
 
+/* What was said back to the producer: records sent, chunks asked for again,
+ * keyframes requested, and records the transport refused (usually: no producer
+ * attached). Any out pointer may be NULL. */
+void ratatoskr_receiver_feedback_stats(RatatoskrHandle *handle,
+                                       uint64_t *out_sent,
+                                       uint64_t *out_chunks_requested,
+                                       uint64_t *out_keyframes_requested,
+                                       uint64_t *out_not_sent);
+
 /* Last error on this thread. Returns the full length; truncates to capacity. */
 size_t ratatoskr_last_error(char *buffer, size_t capacity);
 
