@@ -18,11 +18,12 @@ static void check(int ok, const char *what)
 
 typedef int (*open_fn)(const char *, const char *, unsigned int, RatatoskrHandle **);
 typedef int (*poll_fn)(RatatoskrHandle *);
-typedef int (*next_fn)(RatatoskrHandle *, uint8_t *, size_t, size_t *);
+typedef int (*next_fn)(RatatoskrHandle *, uint8_t *, size_t, size_t *, int *);
 typedef uint16_t (*port_fn)(RatatoskrHandle *);
 typedef void (*delivered_fn)(RatatoskrHandle *, uint64_t *, uint64_t *);
 typedef size_t (*err_fn)(char *, size_t);
 typedef void (*close_fn)(RatatoskrHandle *);
+typedef uint64_t (*undecodable_fn)(RatatoskrHandle *);
 
 int main(int argc, char **argv)
 {
@@ -49,14 +50,20 @@ int main(int argc, char **argv)
     check(r_poll(handle) == 0, "idle poll reports nothing waiting");
 
     size_t out_len = 12345;
+    int kind = -99;
     unsigned char buffer[64];
-    check(r_next(handle, buffer, sizeof buffer, &out_len) == RATATOSKR_NONE,
+    check(r_next(handle, buffer, sizeof buffer, &out_len, &kind) == RATATOSKR_NONE,
           "empty queue reports NONE, not an error");
     check(out_len == 0, "NONE writes a zero length");
 
     uint64_t payloads = 7, bytes = 7;
     r_delivered(handle, &payloads, &bytes);
     check(payloads == 0 && bytes == 0, "delivered counts start at zero");
+
+    undecodable_fn r_undecodable =
+        (undecodable_fn)(void *)GetProcAddress(lib, "ratatoskr_receiver_undecodable");
+    check(r_undecodable != NULL, "undecodable counter is exported");
+    check(r_undecodable(handle) == 0, "nothing has failed to decode yet");
     r_close(handle);
 
     handle = NULL;

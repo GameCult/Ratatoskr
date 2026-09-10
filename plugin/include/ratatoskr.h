@@ -26,6 +26,12 @@ extern "C" {
 #define RATATOSKR_ERR_POLL (-3)
 #define RATATOSKR_ERR_BUFFER_TOO_SMALL (-4)
 
+/* What a payload is, so a caller can route it without parsing the record. */
+#define RATATOSKR_KIND_VIDEO 0
+#define RATATOSKR_KIND_VIDEO_PARITY 1
+#define RATATOSKR_KIND_AUDIO 2
+#define RATATOSKR_KIND_FEEDBACK 3
+
 typedef struct RatatoskrHandle RatatoskrHandle;
 
 /* Opens a media receiver. Release with ratatoskr_receiver_close exactly once. */
@@ -43,7 +49,12 @@ int ratatoskr_receiver_poll(RatatoskrHandle *handle);
 int ratatoskr_receiver_next_payload(RatatoskrHandle *handle,
                                     uint8_t *buffer,
                                     size_t capacity,
-                                    size_t *out_len);
+                                    size_t *out_len,
+                                    int *out_kind);
+
+/* Payloads that arrived on the media channel and did not decode. Non-zero means
+ * the producer and this build disagree about the envelope. */
+uint64_t ratatoskr_receiver_undecodable(RatatoskrHandle *handle);
 
 /* The port actually bound; 0 if unavailable. */
 uint16_t ratatoskr_receiver_local_port(RatatoskrHandle *handle);

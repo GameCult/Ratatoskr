@@ -15,6 +15,8 @@ use std::ffi::{CStr, c_char, c_int, c_uint};
 use std::net::SocketAddr;
 use std::ptr;
 
+use cultnet_rs::GameCultMediaWireRecord;
+
 use crate::receiver::{MediaEvent, RatatoskrReceiver, ReceiverOptions};
 
 pub const RATATOSKR_OK: c_int = 0;
@@ -23,6 +25,25 @@ pub const RATATOSKR_ERR_ARGUMENT: c_int = -1;
 pub const RATATOSKR_ERR_OPEN: c_int = -2;
 pub const RATATOSKR_ERR_POLL: c_int = -3;
 pub const RATATOSKR_ERR_BUFFER_TOO_SMALL: c_int = -4;
+
+/// What a payload is, so a caller can route it without parsing the record.
+pub const RATATOSKR_KIND_VIDEO: c_int = 0;
+pub const RATATOSKR_KIND_VIDEO_PARITY: c_int = 1;
+pub const RATATOSKR_KIND_AUDIO: c_int = 2;
+pub const RATATOSKR_KIND_FEEDBACK: c_int = 3;
+
+fn kind_and_payload(record: GameCultMediaWireRecord) -> (c_int, Vec<u8>) {
+    match record {
+        GameCultMediaWireRecord::Video(record) => (RATATOSKR_KIND_VIDEO, record.payload),
+        GameCultMediaWireRecord::VideoParity(record) => {
+            (RATATOSKR_KIND_VIDEO_PARITY, record.payload)
+        }
+        GameCultMediaWireRecord::Audio(record) => (RATATOSKR_KIND_AUDIO, record.payload),
+        // Feedback flows the other way and carries no media; a caller that asked
+        // for payloads should not be handed one.
+        GameCultMediaWireRecord::Feedback(_) => (RATATOSKR_KIND_FEEDBACK, Vec::new()),
+    }
+}
 
 thread_local! {
     static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
@@ -36,7 +57,7 @@ fn set_last_error(message: impl Into<String>) {
 /// so a caller can poll on one cadence and consume on another.
 pub struct RatatoskrHandle {
     receiver: RatatoskrReceiver,
-    pending: VecDeque<Vec<u8>>,
+    pending: VecDeque<(c_int, Vec<u8>)>,
     attached: Option<SocketAddr>,
 }
 
@@ -104,7 +125,13 @@ pub unsafe extern "C" fn ratatoskr_receiver_poll(handle: *mut RatatoskrHandle) -
         Ok(events) => {
             for event in events {
                 match event {
-                    MediaEvent::Payload { bytes } => handle.pending.push_back(bytes),
+                    MediaEvent::Record { record } => {
+                        let (kind, payload) = kind_and_payload(*record);
+                        if !payload.is_empty() {
+                            handle.pending.push_back((kind, payload));
+                        }
+                    }
+                    MediaEvent::Undecodable { reason, .. } => set_last_error(reason),
                     MediaEvent::ProducerAttached { remote } => handle.attached = Some(remote),
                     MediaEvent::ProducerDetached { .. } => handle.attached = None,
                 }
@@ -133,6 +160,7 @@ pub unsafe extern "C" fn ratatoskr_receiver_next_payload(
     buffer: *mut u8,
     capacity: usize,
     out_len: *mut usize,
+    out_kind: *mut c_int,
 ) -> c_int {
     let Some(handle) = (unsafe { handle.as_mut() }) else {
         set_last_error("null handle");
@@ -142,19 +170,34 @@ pub unsafe extern "C" fn ratatoskr_receiver_next_payload(
         set_last_error("null out_len");
         return RATATOSKR_ERR_ARGUMENT;
     }
-    let Some(payload) = handle.pending.front() else {
+    let Some((kind, payload)) = handle.pending.front() else {
         unsafe { *out_len = 0 };
         return RATATOSKR_NONE;
     };
     let needed = payload.len();
     unsafe { *out_len = needed };
+    if !out_kind.is_null() {
+        unsafe { *out_kind = *kind };
+    }
     if needed > capacity || buffer.is_null() {
         set_last_error(format!("buffer of {capacity} too small for payload of {needed}"));
         return RATATOSKR_ERR_BUFFER_TOO_SMALL;
     }
-    let payload = handle.pending.pop_front().expect("front checked above");
+    let (_, payload) = handle.pending.pop_front().expect("front checked above");
     unsafe { ptr::copy_nonoverlapping(payload.as_ptr(), buffer, needed) };
     RATATOSKR_OK
+}
+
+/// Payloads that arrived on the media channel and did not decode. Non-zero
+/// means the producer and this build disagree about the envelope.
+///
+/// # Safety
+/// `handle` must be live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ratatoskr_receiver_undecodable(handle: *mut RatatoskrHandle) -> u64 {
+    unsafe { handle.as_ref() }
+        .map(|handle| handle.receiver.undecodable())
+        .unwrap_or(0)
 }
 
 /// The port actually bound, which differs from the requested one when 0 was
@@ -249,8 +292,15 @@ mod tests {
         let handle = open();
         let mut out_len = usize::MAX;
         let mut buffer = [0u8; 16];
+        let mut kind = -99;
         let rc = unsafe {
-            ratatoskr_receiver_next_payload(handle, buffer.as_mut_ptr(), buffer.len(), &mut out_len)
+            ratatoskr_receiver_next_payload(
+                handle,
+                buffer.as_mut_ptr(),
+                buffer.len(),
+                &mut out_len,
+                &mut kind,
+            )
         };
         assert_eq!(rc, RATATOSKR_NONE);
         assert_eq!(out_len, 0);
@@ -262,22 +312,37 @@ mod tests {
     #[test]
     fn a_too_small_buffer_reports_the_size_and_keeps_the_payload() {
         let handle = open();
-        unsafe { (*handle).pending.push_back(vec![7u8; 64]) };
+        unsafe { (*handle).pending.push_back((RATATOSKR_KIND_AUDIO, vec![7u8; 64])) };
 
         let mut out_len = 0usize;
+        let mut kind = -99;
         let mut small = [0u8; 8];
         let rc = unsafe {
-            ratatoskr_receiver_next_payload(handle, small.as_mut_ptr(), small.len(), &mut out_len)
+            ratatoskr_receiver_next_payload(
+                handle,
+                small.as_mut_ptr(),
+                small.len(),
+                &mut out_len,
+                &mut kind,
+            )
         };
         assert_eq!(rc, RATATOSKR_ERR_BUFFER_TOO_SMALL);
         assert_eq!(out_len, 64, "the caller is told what it needs");
+        assert_eq!(kind, RATATOSKR_KIND_AUDIO, "and what it is, before taking it");
 
         let mut big = [0u8; 64];
         let rc = unsafe {
-            ratatoskr_receiver_next_payload(handle, big.as_mut_ptr(), big.len(), &mut out_len)
+            ratatoskr_receiver_next_payload(
+                handle,
+                big.as_mut_ptr(),
+                big.len(),
+                &mut out_len,
+                &mut kind,
+            )
         };
         assert_eq!(rc, RATATOSKR_OK, "the payload survived the short read");
         assert_eq!(out_len, 64);
+        assert_eq!(kind, RATATOSKR_KIND_AUDIO);
         assert_eq!(big, [7u8; 64]);
         unsafe { ratatoskr_receiver_close(handle) };
     }

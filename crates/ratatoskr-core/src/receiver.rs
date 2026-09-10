@@ -9,7 +9,7 @@ use std::net::{SocketAddr, UdpSocket};
 use anyhow::{Context, Result};
 use cultnet_rs::{
     CultNetRudpServerHub, CultNetRudpServerHubOptions, CultNetRudpServerEvent,
-    CultNetTransportFrame,
+    CultNetTransportFrame, GameCultMediaWireRecord, decode_media_wire_record,
 };
 
 use crate::MEDIA_CHANNEL;
@@ -30,8 +30,14 @@ pub struct ReceiverOptions {
 pub enum MediaEvent {
     /// A producer attached.
     ProducerAttached { remote: SocketAddr },
-    /// A media payload arrived intact, in the order the producer sent it.
-    Payload { bytes: Vec<u8> },
+    /// A media record arrived and decoded.
+    Record { record: Box<GameCultMediaWireRecord> },
+    /// A media payload arrived but is not a media record this build understands.
+    ///
+    /// Surfaced rather than dropped: a consumer that silently discards what it
+    /// cannot parse gives a producer no way to learn that its stream is
+    /// unreadable, which is how a receiver and a sender drift apart.
+    Undecodable { bytes: Vec<u8>, reason: String },
     /// A producer detached, gracefully or otherwise.
     ProducerDetached { remote: SocketAddr },
 }
@@ -40,6 +46,7 @@ pub struct RatatoskrReceiver {
     hub: CultNetRudpServerHub,
     payloads: u64,
     payload_bytes: u64,
+    undecodable: u64,
 }
 
 impl RatatoskrReceiver {
@@ -61,6 +68,7 @@ impl RatatoskrReceiver {
             hub,
             payloads: 0,
             payload_bytes: 0,
+            undecodable: 0,
         })
     }
 
@@ -88,7 +96,18 @@ impl RatatoskrReceiver {
                     if let Some(payload) = media_payload(frame) {
                         self.payloads += 1;
                         self.payload_bytes += payload.len() as u64;
-                        events.push(MediaEvent::Payload { bytes: payload });
+                        events.push(match decode_media_wire_record(&payload) {
+                            Ok(record) => MediaEvent::Record {
+                                record: Box::new(record),
+                            },
+                            Err(error) => {
+                                self.undecodable += 1;
+                                MediaEvent::Undecodable {
+                                    bytes: payload,
+                                    reason: format!("{error:#}"),
+                                }
+                            }
+                        });
                     }
                 }
                 _ => {}
@@ -103,6 +122,13 @@ impl RatatoskrReceiver {
     /// into silence.
     pub fn delivered(&self) -> (u64, u64) {
         (self.payloads, self.payload_bytes)
+    }
+
+    /// Payloads that arrived on the media channel and did not decode. A
+    /// non-zero count here means the producer and this build disagree about the
+    /// envelope, which is worth knowing loudly.
+    pub fn undecodable(&self) -> u64 {
+        self.undecodable
     }
 }
 

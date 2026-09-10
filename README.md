@@ -63,19 +63,23 @@ be checked with any compiler.
 
 ## Status
 
-Early. The core opens a CultNet media subscription, drains it, and hands
-payloads across the ABI, with tests on both sides of that boundary. What is not
-here yet:
+Early. The core opens a CultNet media subscription, drains it, decodes the
+CultMesh media envelope, and hands typed payloads across the ABI with a kind
+discriminator so a caller routes video and audio without parsing records itself.
+Tests sit on both sides of that boundary.
+
+A payload that arrives on the media channel and fails to decode is surfaced as
+`Undecodable` and counted, never silently dropped. A consumer that discards what
+it cannot parse gives a producer no way to learn its stream is unreadable, which
+is how the last receiver and sender drifted apart without either noticing.
+
+What is not here yet:
 
 - **Frame reassembly and FEC.** The media records carry chunking and parity
   (`gamecult.media_video_access_unit`, `gamecult.media_video_parity_shard.v2`).
   A dead Rust implementation of exactly this survives in Muninn's
   `media_packetizer.rs`, kept because it is the reference the C++ receiver
   drifted away from. It is the natural seed for this half and should move here.
-- **The wire envelope.** `MuninnMediaWireRecord` and `encode_media_wire_record`
-  still live in Muninn. Both ends need them, so they belong in CultLib beside
-  the media records rather than in either end. Until that move, this repo cannot
-  decode a real Muninn stream.
 - **Receiver feedback.** `gamecult.media_receiver_feedback` is the return path a
   producer adapts to. Nothing here emits it yet.
 - **The OBS plugin itself.** Roughly 1,200 lines of genuine OBS work — source
