@@ -30,6 +30,10 @@ use crate::video::{ExpiredFrame, VideoAssembler, VideoAssemblerOptions, VideoFra
 /// takes it as a parameter so no consumer's name is baked into the contract.
 pub const RATATOSKR_MEDIA_PRODUCER: &str = "ratatoskr";
 
+/// Kernel receive buffer for the media socket. Matches the producer's send
+/// buffer; the OS default is a few milliseconds of a 12 Mbps stream.
+const RECEIVE_BUFFER_BYTES: usize = 16 * 1024 * 1024;
+
 #[derive(Clone, Debug)]
 pub struct ReceiverOptions {
     /// The producer's advertised media endpoint, to dial.
@@ -402,6 +406,12 @@ impl RatatoskrReceiver {
 fn dial(producer: SocketAddr, runtime_id: &str, connection_id: u32) -> Result<CultNetRudpSocketTransportConnection> {
     let bind = if producer.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
     let socket = UdpSocket::bind(bind).with_context(|| format!("binding a socket to dial {producer}"))?;
+    // A 12 Mbps stream is ~2,300 datagrams a second; the OS default receive
+    // buffer holds a few milliseconds of that, and every poll gap longer than
+    // it is loss on a wire that lost nothing. Sized like the producer's.
+    socket2::SockRef::from(&socket)
+        .set_recv_buffer_size(RECEIVE_BUFFER_BYTES)
+        .context("sizing the Ratatoskr media receive buffer")?;
     socket
         .set_nonblocking(true)
         .context("setting the Ratatoskr media socket nonblocking")?;

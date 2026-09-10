@@ -615,6 +615,7 @@ dependencies = [
  "cultmesh-rs",
  "cultnet-rs",
  "rmp-serde",
+ "socket2",
 ]
 
 [[package]]
