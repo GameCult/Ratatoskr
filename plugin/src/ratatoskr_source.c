@@ -192,12 +192,21 @@ static void *pump_loop(void *data)
 {
 	struct ratatoskr_source *ctx = data;
 	os_set_thread_name("ratatoskr-pump");
+	int attached = 0;
 	while (ctx->pump_running) {
 		int waiting = ratatoskr_receiver_poll(ctx->receiver);
 		if (waiting < 0) {
 			log_last_error("poll failed");
 			os_sleep_ms(50);
 			continue;
+		}
+		/* The log should say when the producer answered and when it went
+		 * quiet; the core redials on its own either way. */
+		int now_attached = ratatoskr_receiver_attached(ctx->receiver);
+		if (now_attached != attached) {
+			attached = now_attached;
+			blog(LOG_INFO, "[ratatoskr] producer %s for %s", attached ? "attached" : "detached, redialling",
+			     ctx->stream_id);
 		}
 		for (;;) {
 			size_t len = 0;
