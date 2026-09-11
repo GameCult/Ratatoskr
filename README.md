@@ -88,6 +88,10 @@ the source draws a private `ffmpeg_source` child reading it, so OBS's own
 decoder decodes. Audio is PCM and goes straight to `obs_source_output_audio`
 with the producer's presentation time.
 
+OBS 32 scans `%ProgramData%\obs-studio\plugins`; a plugin under the per-user
+`%APPDATA%\obs-studio\plugins` is never enumerated (no log line, no error), which
+cost an hour on 2026-09-11.
+
 **Building the plugin** needs a libobs to link against. There is no SDK
 download for Windows; `.sdk/` (git-ignored) holds an obs-studio checkout at
 the installed version, the matching obs-deps, and a libobs-only build:
@@ -98,7 +102,7 @@ cmake --build .sdk/obs-build --config Release --target libobs
 cargo build --release -p ratatoskr-core
 cmake -S plugin -B plugin/build -G "Visual Studio 17 2022" -A x64   -DCMAKE_MODULE_PATH=.sdk/obs-studio/cmake/finders   -DCMAKE_PREFIX_PATH=".sdk/obs-build/libobs;.sdk/obs-build/deps/w32-pthreads;.sdk/obs-deps-<version>-x64"
 cmake --build plugin/build --config Release
-cmake --install plugin/build --config Release --prefix %APPDATA%/obs-studio/plugins/ratatoskr
+cmake --install plugin/build --config Release --prefix %ProgramData%/obs-studio/plugins/ratatoskr
 ```
 
 The core opens a CultNet media subscription, drains it, decodes the
