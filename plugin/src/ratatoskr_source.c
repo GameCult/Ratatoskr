@@ -166,8 +166,13 @@ static void create_video_child(struct ratatoskr_source *ctx)
 	obs_source_add_active_child(ctx->source, ctx->video_child);
 }
 
+/* Live audio is stamped with the receive clock, as OBS's own network sources
+ * do. The producer's presentation ticks start at zero per session and sit in
+ * its clock domain; handing them to the mixer read as ever-growing drift and
+ * OBS kept adding buffering, then restarted the source's audio for lagging. */
 static void output_audio(struct ratatoskr_source *ctx, const uint8_t *pcm, size_t len, int64_t pts_ns)
 {
+	UNUSED_PARAMETER(pts_ns);
 	if (ctx->audio_channels == 0 || ctx->audio_sample_rate == 0)
 		return;
 	size_t frame_bytes = sizeof(float) * ctx->audio_channels;
@@ -179,7 +184,7 @@ static void output_audio(struct ratatoskr_source *ctx, const uint8_t *pcm, size_
 	audio.samples_per_sec = ctx->audio_sample_rate;
 	audio.format = AUDIO_FORMAT_FLOAT;
 	audio.speakers = ctx->audio_channels == 1 ? SPEAKERS_MONO : SPEAKERS_STEREO;
-	audio.timestamp = pts_ns > 0 ? (uint64_t)pts_ns : os_gettime_ns();
+	audio.timestamp = os_gettime_ns();
 	obs_source_output_audio(ctx->source, &audio);
 }
 
