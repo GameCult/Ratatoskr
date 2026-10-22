@@ -10,6 +10,17 @@ Ratatoskr subscribes to a CultMesh media stream, hands decoded frames to a
 renderer, and reports back what actually arrived. Its first lowering target is
 OBS.
 
+## Front Door
+
+- **Value:** the receiving end of a CultMesh media stream, built on `cultnet-rs` instead of a private transport: subscription, video reassembly with erasure repair, receiver feedback, and Odin catalog discovery, behind a small C ABI that an OBS source drives.
+- **Problem:** the previous receiver hand-rolled CultNet RUDP in C++ and could not take any upstream CultNet fix. Ratatoskr implements no transport.
+- **Entry points:**
+  - `crates/ratatoskr-core/src/receiver.rs` (subscription), `video.rs` (chunks and parity to access units), `feedback.rs`, `catalog.rs` (what Odin advertises), `ffi.rs` (the C ABI).
+  - `crates/ratatoskr-core/examples/`: `catalog.rs` lists advertised streams, `request.rs` asks for one, and `receive.rs` is the whole receive path without OBS (`cargo run -p ratatoskr-core --example receive -- <media-endpoint> <connection-id>`).
+  - `plugin/include/ratatoskr.h` and `plugin/src/ratatoskr_source.c`: the ABI header and the OBS source (CMake; build steps under Status).
+- **Live:** the OBS source "CultMesh Media Stream" builds and installs; the core opens the subscription, reassembles video, passes PCM audio, sends feedback and reads the Odin catalog, with tests on both sides of the ABI.
+- **Planned:** a live frame has not yet crossed the path (it needs a Muninn build that advertises and answers a media endpoint), and Opus audio.
+
 ---
 
 ## Why it exists
